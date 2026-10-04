@@ -21,8 +21,9 @@ def main():
     subparsers = parser.add_subparsers(dest="command", help="Selective CLI commands")
 
     # scan
-    scan_parser = subparsers.add_parser("scan", help="Analyze package AST statically")
-    scan_parser.add_argument("package", help="Package name or directory path")
+    scan_parser = subparsers.add_parser("scan", help="Analyze package or project AST statically")
+    scan_parser.add_argument("target", nargs="?", default=".", help="Package name or project directory path (default: current directory)")
+    scan_parser.add_argument("--project", action="store_true", help="Scan project directory and all its third-party package dependencies")
     scan_parser.add_argument("--bake", help="Bake relocatable cache to specified directory")
 
     # explain
@@ -48,7 +49,7 @@ def main():
     args = parser.parse_args()
 
     if args.command == "scan":
-        sys.exit(cmd_scan(args.package, bake_dir=args.bake, json_out=args.json))
+        sys.exit(cmd_scan(args.target, is_project=args.project, bake_dir=args.bake, json_out=args.json))
     elif args.command == "explain":
         sys.exit(cmd_explain(args.name, unsafe_only=args.unsafe, json_out=args.json))
     elif args.command == "verify":

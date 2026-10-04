@@ -1,6 +1,6 @@
 """
-Package Scanner for Selective.
-Discovers and parses Python package files statically using AST without code execution.
+Package and Project Scanner for Selective.
+Discovers and parses Python package and project files statically using AST without code execution.
 """
 
 import os
@@ -10,7 +10,8 @@ import hashlib
 import importlib.util
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Set, Any
+from selective.analyzer.import_extractor import ImportExtractor
 
 class ModuleFileInfo:
     def __init__(
@@ -111,7 +112,7 @@ class PackageScanner:
         self.package_root, self.package_name = self._resolve_package_root(package_name_or_path)
 
     def _resolve_package_root(self, target: str) -> Tuple[Path, str]:
-        path_target = Path(target)
+        path_target = Path(target).resolve()
         if path_target.exists():
             if path_target.is_file() and path_target.name == "__init__.py":
                 return path_target.parent, path_target.parent.name
@@ -142,7 +143,7 @@ class PackageScanner:
         tasks = []
         for root, dirs, files in os.walk(self.package_root):
             # Exclude __pycache__ and hidden dirs
-            dirs[:] = [d for d in dirs if not d.startswith(".") and d != "__pycache__"]
+            dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ("__pycache__", "venv", ".venv")]
             rel_dir = Path(root).relative_to(self.package_root)
 
             for f in files:
@@ -199,3 +200,57 @@ class PackageScanner:
                 results[info.module_name] = info
 
         return results
+
+class ProjectScanner:
+    """
+    Scans a project directory, extracts all third-party package imports used across project Python files.
+    """
+    def __init__(self, project_path: str):
+        self.project_path = Path(project_path).resolve()
+        if not self.project_path.exists() or not self.project_path.is_dir():
+            raise ValueError(f"Project path '{project_path}' does not exist or is not a directory")
+
+    def discover_third_party_dependencies(self) -> Set[str]:
+        stdlib_names = getattr(sys, "stdlib_module_names", set())
+
+        # Collect internal module/package names inside project directory
+        internal_names = set()
+        for item in self.project_path.iterdir():
+            if item.is_file() and item.suffix == ".py":
+                internal_names.add(item.stem)
+            elif item.is_dir() and not item.name.startswith(".") and item.name not in ("venv", ".venv", "__pycache__"):
+                internal_names.add(item.name)
+
+        third_party_packages: Set[str] = set()
+
+        for root, dirs, files in os.walk(self.project_path):
+            dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ("__pycache__", "venv", ".venv", "build", "dist")]
+            for f in files:
+                if f.endswith(".py") and not f.startswith("."):
+                    file_path = Path(root) / f
+                    try:
+                        source = file_path.read_text(encoding="utf-8", errors="replace")
+                        tree = ast.parse(source, filename=str(file_path))
+                        extractor = ImportExtractor("project_file")
+                        records = extractor.extract(tree)
+
+                        for rec in records:
+                            target = rec.target_module
+                            if not target:
+                                continue
+                            top_level = target.split(".")[0]
+
+                            if top_level in stdlib_names or top_level in internal_names or top_level.startswith("."):
+                                continue
+
+                            # Verify top_level is an installed package
+                            try:
+                                spec = importlib.util.find_spec(top_level)
+                                if spec is not None:
+                                    third_party_packages.add(top_level)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+
+        return third_party_packages

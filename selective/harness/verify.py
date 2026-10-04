@@ -8,7 +8,7 @@ import subprocess
 import json
 import tempfile
 from pathlib import Path
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Optional
 from selective.harness.oec import OECSnapshot
 
 PYTHON_EXE = sys.executable
