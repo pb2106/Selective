@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "selective"
+version = "0.1.0"
+description = "Safety-Analyzed, Demand-Driven Package Loading for Python"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "Selective Team"}
+]
+dependencies = [
+    "pyelftools>=0.29",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "networkx>=2.5",
+]
+
+[project.scripts]
+selective = "selective.cli.main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

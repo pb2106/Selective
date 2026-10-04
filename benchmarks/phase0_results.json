@@ -1,0 +1,149 @@
+{
+  "feasilibility_threshold_pct": 15.0,
+  "results": {
+    "pandas": {
+      "A": {
+        "wall_sec": 0.4555066600005375,
+        "total_modules": 293,
+        "loaded_modules": 293,
+        "untouched_modules": 0,
+        "total_pkg_self_ms": 143.846,
+        "untouched_self_ms": 0.0,
+        "native_self_ms": 30.592,
+        "upper_bound_savings_ms": 0.0,
+        "upper_bound_savings_pct": 0.0
+      },
+      "B": {
+        "wall_sec": 0.3935226470002817,
+        "total_modules": 293,
+        "loaded_modules": 293,
+        "untouched_modules": 0,
+        "total_pkg_self_ms": 168.673,
+        "untouched_self_ms": 0.0,
+        "native_self_ms": 25.927,
+        "upper_bound_savings_ms": 0.0,
+        "upper_bound_savings_pct": 0.0
+      },
+      "C": {
+        "wall_sec": 0.42836900299971603,
+        "total_modules": 293,
+        "loaded_modules": 293,
+        "untouched_modules": 0,
+        "total_pkg_self_ms": 156.026,
+        "untouched_self_ms": 0.0,
+        "native_self_ms": 36.075,
+        "upper_bound_savings_ms": 0.0,
+        "upper_bound_savings_pct": 0.0
+      }
+    },
+    "scipy": {
+      "A": {
+        "wall_sec": 0.4410417449998931,
+        "total_modules": 87,
+        "loaded_modules": 86,
+        "untouched_modules": 1,
+        "total_pkg_self_ms": 86.642,
+        "untouched_self_ms": 0.047,
+        "native_self_ms": 26.372,
+        "upper_bound_savings_ms": 0.047,
+        "upper_bound_savings_pct": 0.05424620853627571
+      },
+      "B": {
+        "wall_sec": 0.5828170020004109,
+        "total_modules": 321,
+        "loaded_modules": 320,
+        "untouched_modules": 1,
+        "total_pkg_self_ms": 220.01,
+        "untouched_self_ms": 0.049,
+        "native_self_ms": 16.857,
+        "upper_bound_savings_ms": 0.049,
+        "upper_bound_savings_pct": 0.022271714922048998
+      },
+      "C": {
+        "wall_sec": 0.9218166359996758,
+        "total_modules": 490,
+        "loaded_modules": 489,
+        "untouched_modules": 1,
+        "total_pkg_self_ms": 637.7,
+        "untouched_self_ms": 0.044,
+        "native_self_ms": 18.959,
+        "upper_bound_savings_ms": 0.044,
+        "upper_bound_savings_pct": 0.006899796142386702
+      }
+    },
+    "numpy": {
+      "A": {
+        "wall_sec": 0.14969586999995954,
+        "total_modules": 85,
+        "loaded_modules": 84,
+        "untouched_modules": 1,
+        "total_pkg_self_ms": 52.49,
+        "untouched_self_ms": 0.063,
+        "native_self_ms": 0.056,
+        "upper_bound_savings_ms": 0.063,
+        "upper_bound_savings_pct": 0.12002286149742807
+      },
+      "B": {
+        "wall_sec": 0.1561294140001337,
+        "total_modules": 89,
+        "loaded_modules": 88,
+        "untouched_modules": 1,
+        "total_pkg_self_ms": 52.969,
+        "untouched_self_ms": 0.034,
+        "native_self_ms": 0.045,
+        "upper_bound_savings_ms": 0.034,
+        "upper_bound_savings_pct": 0.0641884876059582
+      },
+      "C": {
+        "wall_sec": 0.1256484100003945,
+        "total_modules": 85,
+        "loaded_modules": 84,
+        "untouched_modules": 1,
+        "total_pkg_self_ms": 55.196,
+        "untouched_self_ms": 0.045,
+        "native_self_ms": 0.049,
+        "upper_bound_savings_ms": 0.045,
+        "upper_bound_savings_pct": 0.08152764693093702
+      }
+    },
+    "torch": {
+      "A": {
+        "wall_sec": 1.4194244519994754,
+        "total_modules": 742,
+        "loaded_modules": 741,
+        "untouched_modules": 1,
+        "total_pkg_self_ms": 893.946,
+        "untouched_self_ms": 0.045,
+        "native_self_ms": 243.357,
+        "upper_bound_savings_ms": 0.045,
+        "upper_bound_savings_pct": 0.005033861105704371
+      },
+      "B": {
+        "wall_sec": 1.3995013829999152,
+        "total_modules": 742,
+        "loaded_modules": 741,
+        "untouched_modules": 1,
+        "total_pkg_self_ms": 927.963,
+        "untouched_self_ms": 0.036,
+        "native_self_ms": 234.287,
+        "upper_bound_savings_ms": 0.036,
+        "upper_bound_savings_pct": 0.0038794650217734974
+      },
+      "C": {
+        "wall_sec": 2.598328754999784,
+        "total_modules": 1044,
+        "loaded_modules": 1042,
+        "untouched_modules": 2,
+        "total_pkg_self_ms": 1687.55,
+        "untouched_self_ms": 0.301,
+        "native_self_ms": 222.476,
+        "upper_bound_savings_ms": 0.301,
+        "upper_bound_savings_pct": 0.017836508547894876
+      }
+    }
+  },
+  "prototype": {
+    "eager_sec": 0.3922802650004087,
+    "lazy_sec": 0.3062356689997614
+  }
+}

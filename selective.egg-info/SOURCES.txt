@@ -1,0 +1,15 @@
+README.md
+pyproject.toml
+selective/__init__.py
+selective.egg-info/PKG-INFO
+selective.egg-info/SOURCES.txt
+selective.egg-info/dependency_links.txt
+selective.egg-info/entry_points.txt
+selective.egg-info/requires.txt
+selective.egg-info/top_level.txt
+selective/analyzer/__init__.py
+selective/analyzer/graph_builder.py
+selective/analyzer/import_extractor.py
+selective/analyzer/scanner.py
+selective/analyzer/serializer.py
+selective/analyzer/static_pruner.py
