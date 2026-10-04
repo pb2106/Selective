@@ -1,2 +1,0 @@
-[console_scripts]
-selective = selective.cli.main:main

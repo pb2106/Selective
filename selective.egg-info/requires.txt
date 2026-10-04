@@ -1,5 +1,0 @@
-pyelftools>=0.29
-
-[dev]
-pytest>=7.0
-networkx>=2.5
