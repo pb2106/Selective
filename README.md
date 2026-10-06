@@ -4,8 +4,8 @@
 
 # Selective
 
-> **Safety-Analyzed, Demand-Driven Package Loading for Python**  
-> *Tagline: Load only what you need, prove observable equivalence, and explain every decision.*
+> **Safety-Analyzed, Demand-Driven Package Loading & Optimization for Python**  
+> *Tagline: Load only what you need, prove observable equivalence, analyze supply-chain security, and explain every decision.*
 
 Selective is an ahead-of-time (AOT) package safety analyzer and runtime demand loader for Python (CPython 3.10+). It solves Python's eager import bottleneck in large third-party packages (**PyTorch**, **pandas**, **SciPy**, **NumPy**, **TensorFlow**, **Transformers**), where `import pkg` initializes far more submodules, native libraries, and decorators than a program ever uses.
 
@@ -32,98 +32,57 @@ Selective eliminates up to **97% of startup import overhead** without modifying 
 
 ---
 
-## 🛠️ Installation & Quick Start
+## 🛠️ Extended Capabilities
 
+### 1. ⚡ Background Speculative Loading
+Prepares likely-needed modules in the background (AST parsing, transforming, bytecode compilation, and caching) while application execution continues without changing observable behavior:
+```python
+import selective
+selective.prefetch("torch.optim", confidence=0.98)
+```
+Or enable background speculative loading via CLI:
 ```bash
-# Clone the repository and install editable
-git clone https://github.com/selective/selective.git
-cd Selective
-pip install -e .
+selective run app.py --speculative
 ```
 
-### 1. Scan an Entire Project Directory
-Discover and analyze all third-party dependencies used across your project's `.py` files automatically:
-
+### 2. 🛡️ Supply-Chain Security Analysis
+Analyzes dependency capabilities statically without executing untrusted code:
+- Detects dynamic code execution (`eval`, `exec`, `importlib.import_module`), system interactions (`subprocess`, `ctypes`, `os.system`), network capabilities (`socket`, `requests`, `urllib`), environment mutations (`os.environ`), and global import hooks (`sys.meta_path`).
+- Generates a stable **Behavioral Genome** hash (`genome_id`).
+- Compares supply-chain changes between package versions:
 ```bash
-selective scan /path/to/my_project --project
+# Security report for package
+selective security torch --fail-on HIGH
+
+# Supply-chain diff between versions
+selective security diff torch-v1.json torch-v2.json
 ```
 
-```text
-[Selective] Scanning project directory at '/path/to/my_project'...
-[Selective] Discovered 4 third-party package dependencies: numpy, pandas, scipy, torch
-  Scanning package 'numpy'...
-  Scanning package 'pandas'...
-  Scanning package 'scipy'...
-  Scanning package 'torch'...
-[Selective] Project scan complete. Manifest written to: .selective/project_manifest.json
-```
-
-### 2. Run Application with Demand Loading
-Run your script with transparent demand loading enabled:
-
+### 3. 🔍 Automatic Regression Bisecting & Reproduction
+Automatically isolates the minimal lazy-import edge causing an OEC verification regression using delta-debugging:
 ```bash
-selective run app.py
+selective bisect app.py
 ```
-
-### 3. Inspect Decisions
-Understand why any module or edge was classified as eager or lazy:
-
+- Generates a deterministic reproduction directory `.selective/repro/case-XXXX/` containing `app.py`, `baseline.json`, `selective.json`, `load_plan.json`, `failing_edges.json`, and `explanation.json`.
+- Explains causal chains:
 ```bash
-selective explain torch.nn
+selective explain torch.fx --why
 ```
 
-### 4. Verify Equivalence Contract
-Run differential verification to ensure your optimized app behaves identically to standard CPython:
-
+### 4. 📦 Serverless & Container Optimization
+Optimizes Python cold-starts for AWS Lambda, Google Cloud Run, Azure Functions, and Docker containers:
 ```bash
-selective verify app.py
+selective build lambda/ --type lambda
+selective build container/ --type container --bake ./baked_cache
 ```
+Generates relocatable precomputed cache artifacts and `build_manifest.json`.
 
----
-
-## 💡 How Selective Works: The 4 Pillars
-
-```text
-INSTALL / DISCOVER
-      │
-      ▼
-AOT Safety Analyzer (No code execution) ──► Static & Safety Graphs ──► Load Plans
-      │
-      ▼
-Differential Verification (OEC Harness L1-L5, Test Suites, Fuzzing)
-      │
-      ▼
-Runtime Execution: Eager Skeleton + Demand-Driven Lazy Proxies
-      │
-      ├─► Touched: Resolve on demand (Thread-safe late load)
-      ├─► Graph Violation: Fail open (Taint package, eager fallback, hint persistence)
-      └─► Untouched: Cost is NEVER paid
+### 5. 🎯 Import Optimization Budgets
+Allows developers to set explicit performance constraints and optimizes load plans under safety strictness:
+```bash
+selective optimize pandas --startup-target 500ms --memory-target 300MB --safety strict
 ```
-
-### 1. Ahead-of-Time (AOT) Safety Analyzer
-Scans package ASTs and shared libraries (`pyelftools`) statically **without importing or executing package code**:
-- **Static Elimination**: Removes `if TYPE_CHECKING:` blocks and constant platform/version branches.
-- **Side-Effect Detector**: Flags module-scope registration calls (`register_*`), system hooks (`atexit`, `signal`, `threading`), environment writes (`os.environ`), and audit hooks.
-- **Native Binary Scanner**: Inspects ELF `DT_NEEDED`, `RPATH`, and `PyInit_*` symbols to preserve native extension load ordering (`NATIVE_REQUIRED`).
-- **Safety Classification**: Categorizes edges into 6 evidence tiers (`SAFE_LAZY`, `CONDITIONALLY_LAZY`, `EAGER_REQUIRED`, `NATIVE_REQUIRED`, `SECURITY_EAGER`, `UNKNOWN`).
-
-### 2. Source-Transform Loader
-Rewrites package module bodies dynamically during import:
-- **Strategy B (CPython 3.10 – 3.14)**: Rewrites module-scope imports to lazy descriptors (`LazyModuleProxy`) and installs PEP 562 `__getattr__` descriptors while preserving line numbers (`ast.copy_location`) and `inspect` / `linecache` compatibility.
-- **Strategy A (CPython 3.15+)**: Prepends generated `__lazy_modules__ = [...]` lists to apply CPython's native explicit lazy import mechanism (PEP 810).
-- **Isolated Bytecode Cache**: Caches transformed bytecode in `.selective/cache/` keyed by `sha256(source) + graph_id + transform_version + MAGIC_NUMBER`.
-
-### 3. Observable Equivalence Contract (OEC) Harness
-Enforces semantic equivalence across 5 strict levels via `selective verify`:
-- **L1 Namespace**: `dir()` and `__all__` member consistency after resolution.
-- **L2 Registries**: Dispatch tables (`torch.ops`), pandas accessors, and entry-point registries.
-- **L3 Behavior**: Execution output, warnings, and return values.
-- **L4 Process State**: Environment variables, recursion limits, RNG state, signal/atexit handlers.
-- **L5 Error Timing**: `ImportError` exceptions occur exactly where expected.
-
-### 4. Miss Path & Degradation Ladder
-- **Thread-Safe Resolution**: Per-module reentrant locks (`threading.RLock`) with acyclic ordering rules to prevent deadlocks.
-- **Fail Open**: If an unexpected attribute is missing or a graph violation occurs, Selective taints the package for the current process, immediately falling back to standard eager imports for all remaining stubs.
+Enforces safety as a hard constraint and provides explainable decisions for blocking modules.
 
 ---
 
@@ -131,27 +90,35 @@ Enforces semantic equivalence across 5 strict levels via `selective verify`:
 
 | Command | Usage | Description |
 |---|---|---|
-| `scan` | `selective scan [target] [--project] [--bake DIR]` | Scans a single package or an entire project directory (`--project`) |
-| `explain` | `selective explain <module> [--unsafe]` | Explains why an import edge was classified lazy, eager, or unsafe |
+| `scan` | `selective scan [target] [--project] [--bake DIR]` | Scans a package or project directory and auto-discovers dependencies |
+| `security` | `selective security <pkg> [--fail-on LEVEL]` | Generates supply-chain security report & behavioral genome |
+| `security diff` | `selective security diff <old.json> <new.json>` | Diffs supply-chain behavioral changes between two report JSONs |
+| `explain` | `selective explain <module> [--unsafe] [--why]` | Explains import safety decisions or complete causal failure chains |
+| `bisect` | `selective bisect <script.py>` | Delta-debugging bisection isolating minimal failing edge & repro artifact |
+| `build` | `selective build <target> [--type container\|lambda]` | Precomputes relocatable container/serverless cold-start artifacts |
+| `optimize` | `selective optimize <target> [--startup-target 500ms]` | Optimizes load plan under explicit startup and memory budgets |
 | `verify` | `selective verify <script.py>` | Runs differential subprocess verification against OEC contract |
-| `bisect` | `selective bisect <script.py>` | Bisects lazy edges to isolate minimal edge causing a diff |
 | `doctor` | `selective doctor` | Displays environment diagnostics, cache writeability, and hook health |
 | `install-hook` | `selective install-hook` | Installs `.pth` / `sitecustomize` stub into the active virtual environment |
 | `uninstall-hook` | `selective uninstall-hook` | Uninstalls `.pth` hook stub completely |
-| `run` | `selective run <script.py>` | Executes a script with Selective demand loading enabled |
+| `run` | `selective run <script.py> [--speculative]` | Executes a script with Selective demand loading and optional speculation |
 
 *All CLI commands support `--json` for machine-readable output in CI/CD pipelines.*
 
 ---
 
+## 📊 Performance Metric Labels
+
+Selective clearly distinguishes metric sources across CLI outputs and JSON artifacts:
+- **`measured`**: Empirical measurements gathered directly from subprocess benchmark runs.
+- **`estimated`**: Analytical estimates calculated from AST dependency structure and file sizes.
+- **`predicted`**: Probabilistic confidence scores assigned by the speculative scheduler.
+
+---
+
 ## 🤝 Relationship to PEP 810 (Python 3.15 Explicit Lazy Imports)
 
-Python 3.15 introduces native explicit lazy imports via PEP 810 (`lazy import json`). 
-
-Selective does not compete with PEP 810—it complements it:
-- PEP 810 provides the **mechanism** for lazy imports in code you own.
-- Selective provides the **AOT safety analysis** that determines which imports in third-party packages you do not control are safe to make lazy, why, and under what conditions.
-- On Python 3.15+, Selective uses PEP 810's `__lazy_modules__` native mechanism directly.
+Python 3.15 introduces native explicit lazy imports via PEP 810 (`lazy import json`). Selective complements PEP 810 by providing the AOT safety analysis that determines which imports in third-party packages are safe to make lazy, and uses PEP 810's native `__lazy_modules__` mechanism on 3.15+.
 
 ---
 

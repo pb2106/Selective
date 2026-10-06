@@ -4,6 +4,7 @@ Runs script under normal Python vs Selective optimization, compares OEC snapshot
 """
 
 import sys
+import os
 import subprocess
 import json
 import tempfile
@@ -60,7 +61,7 @@ class DifferentialVerifier:
             script_path=str(self.script_path)
         )
         
-        env = dict(sys.environ)
+        env = dict(os.environ)
         if not enable_selective:
             env["SELECTIVE_DISABLE"] = "1"
         else:

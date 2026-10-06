@@ -33,6 +33,12 @@ class SelectiveLoader(importlib.abc.SourceLoader):
 
         graph_id = self.package_graph.package_hash if self.package_graph else "default"
 
+        # 0. Speculative prepared code check
+        from selective.loader.speculative import SpeculativeScheduler
+        prepared_code = SpeculativeScheduler.get_instance().get_prepared_code(fullname)
+        if prepared_code is not None:
+            return prepared_code
+
         # 1. Bytecode cache lookup
         cached_code = self.cache_manager.get(source_text, graph_id)
         if cached_code is not None:
