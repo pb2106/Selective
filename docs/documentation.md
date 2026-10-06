@@ -1,165 +1,463 @@
-# Selective: Technical Architecture & User Guide
+# Selective: Complete System Architecture & Master Reference Manual
 
 > **Version:** 2.0  
 > **Target:** CPython 3.10+ (Native PEP 810 Fast-Path on CPython 3.15+)  
+> **Status:** Production-Ready Core Architecture  
 > **License:** Apache 2.0  
 
 ---
 
-## 1. Executive Summary & Core Objective
+## 📖 Table of Contents
 
-**Selective** is an ahead-of-time (AOT) package safety analyzer, supply-chain auditor, and runtime demand loader for Python. It addresses Python's eager import bottleneck in large data science and machine learning packages (**PyTorch**, **pandas**, **SciPy**, **NumPy**, **TensorFlow**, **Transformers**), where `import pkg` initializes hundreds of submodules, native dynamic C/C++ shared libraries, global side effects, and registration decorators that a program never invokes.
-
-Selective operates under a strict constraint: **Never sacrifice safety for performance targets.** It achieves up to **97.1% startup import overhead reduction** without modifying installed packages on disk or executing untrusted third-party code during AOT analysis.
-
----
-
-## 2. System Architecture & Module Map
-
-The Selective codebase is structured into five core sub-packages:
-
-```
-selective/
-├── analyzer/              # AOT Static Analysis & Safety Graph Engine
-│   ├── scanner.py          # Package & Project Directory Scanner (AST & ELF)
-│   ├── import_extractor.py # AST Import Extractor & Relative Import Resolver
-│   ├── static_pruner.py    # Zero-risk static elimination (TYPE_CHECKING, platform/version)
-│   ├── symbol_table.py    # Symbol binding & __all__ export resolver
-│   ├── side_effects.py    # AST side-effect analyzer (registration, hooks, env writes)
-│   ├── native_scanner.py  # ELF dynamic section scanner (pyelftools: DT_NEEDED, PyInit_*)
-│   ├── classifier.py      # Safety classifier (6 evidence tiers)
-│   ├── graph_builder.py   # Dependency Graphs (Static A, Safety B, Runtime Plan C)
-│   ├── serializer.py      # JSON & binary SLTV graph serialization
-│   ├── security.py        # Supply-Chain Security & Behavioral Genome Generator
-│   └── budget_optimizer.py# Budget Optimizer (Startup & Memory targets under safety)
-│
-├── loader/                # Runtime Demand Loader & Bytecode Transformer
-│   ├── finder.py          # SelectiveFinder (O(1) MetaPathFinder fast reject)
-│   ├── transformer.py     # Strategy B (AST Proxy Rewriter) & Strategy A (PEP 810 __lazy_modules__)
-│   ├── loader.py          # SelectiveLoader (SourceLoader serving transformed bytecode)
-│   ├── cache_manager.py   # Bytecode cache manager keyed by sha256(source + graph_id + MAGIC)
-│   ├── miss_path.py       # Thread-safe LazyModuleProxy & Process Tainting engine
-│   ├── speculative.py     # Background Speculative Scheduler & Worker Pool
-│   └── controls.py        # Environment flags & runtime configuration
-│
-├── harness/               # Verification, Bisection, and Fuzzing
-│   ├── oec.py             # Observable Equivalence Contract snapshot engine (L1–L5)
-│   ├── verify.py          # Differential Subprocess Verifier
-│   ├── fuzzer.py          # Import & Attribute Access Order Randomizer
-│   └── bisect.py          # Advanced Delta-Debugging Bisector & Repro Generator
-│
-├── deploy/                # Deployment, Building, and Diagnostics
-│   ├── cache_resolver.py  # Multi-tier cache resolver & read-only filesystem handling
-│   ├── hook.py            # .pth / sitecustomize virtualenv hook installer
-│   ├── preload.py         # Pre-fork expected-use set preloader
-│   ├── doctor.py          # System environment diagnostics
-│   └── builder.py         # SelectiveArtifactBuilder for serverless & container builds
-│
-└── cli/                   # Command Line Interface
-    ├── commands.py        # CLI subcommand implementations
-    └── main.py            # CLI entry point parser
-```
+1. [Executive Summary & System Philosophy](#1-executive-summary--system-philosophy)
+2. [High-Level Architectural Overview](#2-high-level-architectural-overview)
+3. [Subsystem Deep Dives](#3-subsystem-deep-dives)
+   - [3.1. `selective.analyzer` (AOT Static Analysis & Safety Graph Engine)](#31-selectiveanalyzer-aot-static-analysis--safety-graph-engine)
+   - [3.2. `selective.loader` (Runtime Demand Loader & Bytecode Transformer)](#32-selectiveloader-runtime-demand-loader--bytecode-transformer)
+   - [3.3. `selective.harness` (Observable Equivalence, Verification & Bisection)](#33-selectiveharness-observable-equivalence-verification--bisection)
+   - [3.4. `selective.deploy` (Multi-Tier Deployment & Build Optimization)](#34-selectivedeploy-multi-tier-deployment--build-optimization)
+   - [3.5. `selective.cli` (CLI Command Engine & Main Entrypoint)](#35-selectivecli-cli-command-engine--main-entrypoint)
+4. [Safety Classification & Evidence Taxonomy](#4-safety-classification--evidence-taxonomy)
+5. [Observable Equivalence Contracts (OEC Levels 1–5)](#5-observable-equivalence-contracts-oec-levels-15)
+6. [Data Formats & Schema Specifications](#6-data-formats--schema-specifications)
+   - [6.1. Package Graph Schema (JSON & Binary SLTV)](#61-package-graph-schema-json--binary-sltv)
+   - [6.2. Behavioral Genome Security Format](#62-behavioral-genome-security-format)
+   - [6.3. Bisection Repro Artifact Bundle Structure](#63-bisection-repro-artifact-bundle-structure)
+7. [Exhaustive CLI Command Reference](#7-exhaustive-cli-command-reference)
+8. [Python API & Environment Variable Reference](#8-python-api--environment-variable-reference)
+9. [Empirical Benchmarks & Performance Metrics](#9-empirical-benchmarks--performance-metrics)
 
 ---
 
-## 3. Safety Classification Framework
+## 1. Executive Summary & System Philosophy
 
-Selective classifies every module and import edge into **6 Safety Tiers**:
+### The Eager Import Bottleneck
+In modern Python data science, machine learning, and web stacks (**PyTorch**, **pandas**, **SciPy**, **NumPy**, **TensorFlow**, **Transformers**), executing `import package` triggers massive cascading import trees. For example:
+- `import torch` eagerly parses and executes over **290 submodules**, loads native dynamic shared C/C++ libraries (`libtorch.so`, `libc10.so`), and registers dozens of global CUDA/CPU backend dispatchers—even if the application only creates a basic 2D tensor.
+- `import pandas` eagerly imports **1,040+ submodules**, initializes plotting backends, option registries, and formatters—even if the application only processes a CSV via a utility function.
 
-| Safety Class | Evidence Tier | Description | Strategy |
+This eager initialization causes **severe cold-start latency** in AWS Lambda, Cloud Run, serverless containers, and short-lived CLI tools.
+
+### Why Generic Lazy Loaders Break
+Traditional dynamic lazy loaders (e.g., standard `importlib.util.LazyLoader` or naive proxy wrappers) frequently break real-world Python packages due to:
+1. **Implicit Module Side-Effects**: Registration calls (`atexit.register`, `@register_backend`), `os.environ` mutations, and signal handlers that must run at startup.
+2. **Native Dynamic Extensions (`.so`, `.pyd`, `.dylib`)**: Dynamic C/C++ extensions that rely on `DT_NEEDED` dynamic loader resolution and `PyInit_*` static state initialization.
+3. **`sys.modules` Inspection & Global Tainting**: Third-party code checking `if "submod" in sys.modules` or mutating `sys.modules` dict keys dynamically.
+4. **Dynamic Export Resolution**: Submodules exporting symbols dynamically via `__all__` or `__getattr__` descriptors.
+
+### Selective's Core Guarantee
+Selective solves this bottleneck through **Ahead-Of-Time (AOT) Static Analysis and Demand-Driven Runtime Loading**. Selective operates under a strict, non-negotiable principle:
+
+> **Hard Safety Invariant**: Safety is never sacrificed for performance targets. If static analysis cannot prove that deferring a module import preserves exact observable behavior, that module remains **eagerly loaded**.
+
+---
+
+## 2. High-Level Architectural Overview
+
+Selective decoupled the loading process into an **AOT Static Phase** (which inspects source code without executing untrusted package bodies) and a **Runtime Demand Loading Phase** (which intercepts and transforms imports on demand).
+
+```mermaid
+graph TD
+    subgraph AOT Static Phase
+        A[Package / Project Source Files] --> B[PackageScanner & ProjectScanner]
+        B --> C[AST Parsing & ImportExtractor]
+        B --> D[SideEffectAnalyzer]
+        B --> E[ELF NativeScanner pyelftools]
+        C --> F[SafetyClassifier]
+        D --> F
+        E --> F
+        F --> G[PackageGraph Static, Safety, Plan]
+        G --> H[GraphSerializer JSON & SLTV]
+    end
+
+    subgraph Runtime Demand Loading Phase
+        I[Python Interpreter Execution] --> J[SelectiveFinder MetaPathFinder]
+        J -->|Managed Package| K[SelectiveLoader]
+        J -->|Unmanaged| L[Standard Python MetaPath]
+        K --> M[Bytecode Cache Lookup]
+        M -->|Cache Hit| N[Execute Pre-Compiled Bytecode]
+        M -->|Cache Miss| O[SelectiveTransformer Strategy A / B]
+        O --> P[Compile & Store Transformed Bytecode]
+        P --> N
+        N --> Q[LazyModuleProxy / Miss Path Engine]
+        Q -->|Attribute Access| R[Demand Module Execution & Cache]
+    end
+```
+
+---
+
+## 3. Subsystem Deep Dives
+
+### 3.1. `selective.analyzer` (AOT Static Analysis & Safety Graph Engine)
+
+The analyzer inspects Python package files, AST nodes, and native dynamic shared libraries to construct a precise dependency graph.
+
+#### Core Files & Implementations:
+
+- **[scanner.py](file:///home/naegleria/Desktop/Selective/selective/analyzer/scanner.py)**:
+  - `PackageScanner`: Scans target Python packages on disk or installed in virtual environments (`importlib.util.find_spec`). Uses a `ProcessPoolExecutor` worker pool for high-throughput AST parsing. Computes SHA-256 file hashes to detect source modifications.
+  - `ProjectScanner`: Scans local project directories containing user application code, extracts all imported third-party package dependencies across `.py` files, and automatically builds graphs for all used packages.
+  - `ModuleFileInfo`: Dataclass storing module metadata (`module_name`, `file_path`, `relative_path`, `file_hash`, `is_init`, `is_extension`, `ast_tree`, `error`).
+
+- **[import_extractor.py](file:///home/naegleria/Desktop/Selective/selective/analyzer/import_extractor.py)**:
+  - `ImportExtractor` & `ImportVisitor`: AST node visitors extracting all import statements (`import a`, `from a import b`, `from . import c`, `from a import *`). Tracks AST scope (`module`, `function`, `class`) and identifies imports inside guarded branches (`if TYPE_CHECKING:`, `if sys.version_info >= ...`).
+  - `resolve_relative_import`: Relative import resolution algorithm. Accounts for module type (`is_init=True` for `__init__.py` files where the module name is the package name vs `is_init=False` for standard submodules).
+
+- **[side_effects.py](file:///home/naegleria/Desktop/Selective/selective/analyzer/side_effects.py)**:
+  - `SideEffectAnalyzer` & `SideEffectVisitor`: Scans module-level AST for global side effects. Categorizes side effects into 8 categories:
+    1. `REGISTRATION_CALL`: Module-scope registration calls (`register()`, `add_command()`).
+    2. `REGISTRATION_DECORATOR`: Module-scope registration decorators (`@register`, `@hook`).
+    3. `SYSTEM_HOOK`: Process hooks (`atexit.register`, `signal.signal`, `os.register_at_fork`).
+    4. `SECURITY_CONFIG`: Security configuration calls (`sys.addaudithook`).
+    5. `LOGGING_WARNING_CONFIG`: Logging and warning setup (`logging.basicConfig`, `warnings.filterwarnings`).
+    6. `PLUGIN_ENUMERATION`: Plugin or entry-point discovery (`pkgutil.iter_modules`, `entry_points()`).
+    7. `ENV_WRITE`: Environment variable mutations (`os.environ[...] = ...`).
+    8. `SYS_MODULES_MUTATION`: Direct manipulation of `sys.modules` dictionary keys.
+
+- **[native_scanner.py](file:///home/naegleria/Desktop/Selective/selective/analyzer/native_scanner.py)**:
+  - `NativeScanner`: Uses `pyelftools` to scan native compiled shared libraries (`.so`, `.pyd`, `.dylib`). Inspects ELF dynamic sections (`.dynamic`) for `DT_NEEDED` shared library dependencies, `RPATH`/`RUNPATH` tags, and C-Python entrypoint symbols (`PyInit_<modname>`).
+
+- **[classifier.py](file:///home/naegleria/Desktop/Selective/selective/analyzer/classifier.py)**:
+  - `SafetyClassifier`: Evaluates extracted AST imports, side effects, native extension flags, and parse errors to assign a `SafetyClassification` (`safety_class`, `evidence_tier`, `reason`).
+
+- **[graph_builder.py](file:///home/naegleria/Desktop/Selective/selective/analyzer/graph_builder.py)**:
+  - `GraphNode`, `GraphEdge`, `PackageGraph`: Maintains the Static Dependency Graph (A), Safety Graph (B), and Runtime Plan Graph (C).
+
+- **[serializer.py](file:///home/naegleria/Desktop/Selective/selective/analyzer/serializer.py)**:
+  - `GraphSerializer`: Serializes package graphs to readable JSON format or compact binary `SLTV` format with custom header magic numbers and payload compression.
+
+- **[security.py](file:///home/naegleria/Desktop/Selective/selective/analyzer/security.py)**:
+  - `SecurityAnalyzer`, `BehavioralGenome`, `SecurityReport`, `SupplyChainDiff`: Audits package capabilities statically to generate a stable **Behavioral Genome** hash (`genome_id`). Computes supply-chain diffs between package versions to flag newly introduced security risks.
+
+- **[budget_optimizer.py](file:///home/naegleria/Desktop/Selective/selective/analyzer/budget_optimizer.py)**:
+  - `BudgetOptimizer`: Knapsack-style optimization engine that selects the optimal set of lazy import edges to meet startup latency targets (`--startup-target`) and memory targets (`--memory-target`) while adhering to strict safety constraints.
+
+---
+
+### 3.2. `selective.loader` (Runtime Demand Loader & Bytecode Transformer)
+
+The loader subsystem intercepts Python's import machinery at runtime and serves transformed AST bytecode.
+
+#### Core Files & Implementations:
+
+- **[finder.py](file:///home/naegleria/Desktop/Selective/selective/loader/finder.py)**:
+  - `SelectiveFinder`: Implements `importlib.abc.MetaPathFinder`. Placed at index 0 of `sys.meta_path`. Performs an $O(1)$ set lookup against `_managed_packages`. Unmanaged imports bypass Selective in `< 0.150 µs`. Preserves `spec.submodule_search_locations` for managed packages.
+
+- **[transformer.py](file:///home/naegleria/Desktop/Selective/selective/loader/transformer.py)**:
+  - `SelectiveTransformer`: Orchestrates AST transformations using two strategies:
+    - **Strategy A (CPython 3.15+)**: Injects native `__lazy_modules__ = [...]` list into module ASTs for PEP 810 compatibility.
+    - **Strategy B (CPython 3.10 – 3.14)**: Rewrites module imports (`import target`) into `LazyModuleProxy` assignments (`bound = __selective_lazy_module__("target", "pkg")`). Verifies that `target` is a valid module node in `known_modules` to prevent converting symbol/function imports into module proxies.
+
+- **[loader.py](file:///home/naegleria/Desktop/Selective/selective/loader/loader.py)**:
+  - `SelectiveLoader`: Subclasses `importlib.abc.SourceLoader`. Reads module source text, queries `BytecodeCacheManager`, applies `SelectiveTransformer`, compiles the transformed AST into bytecode, and caches the result.
+
+- **[cache_manager.py](file:///home/naegleria/Desktop/Selective/selective/loader/cache_manager.py)**:
+  - `BytecodeCacheManager`: Keyed by `sha256(source_text + graph_id + TRANSFORM_VERSION + PYTHON_MAGIC_NUMBER)`. Persists transformed `.pyc` bytecode files.
+
+- **[miss_path.py](file:///home/naegleria/Desktop/Selective/selective/loader/miss_path.py)**:
+  - `LazyModuleProxy`: Thread-safe proxy object replacing lazy imports. Uses per-module `threading.RLock` locks (`_PER_MODULE_LOCKS`) to prevent deadlocks during concurrent demand loading.
+  - `taint_package`: Process degradation engine. If a graph violation or missing attribute occurs at runtime, `taint_package()` marks the package as tainted, degrading all subsequent proxy stubs to immediate eager imports for the remainder of the process lifecycle.
+
+- **[speculative.py](file:///home/naegleria/Desktop/Selective/selective/loader/speculative.py)**:
+  - `SpeculativeScheduler`: Background worker pool (`ThreadPoolExecutor`) that pre-parses, pre-transforms, compiles, and caches bytecode for high-confidence target modules in the background. **Never executes module body code (`exec()`) prematurely**.
+
+- **[controls.py](file:///home/naegleria/Desktop/Selective/selective/loader/controls.py)**:
+  - `SelectiveConfig`: Reads environment configuration flags (`SELECTIVE_DISABLE`, `SELECTIVE_MODE`, `SELECTIVE_STRICT`, `SELECTIVE_LOG`, `SELECTIVE_BAKED_CACHE`, `SELECTIVE_SPECULATIVE`).
+
+---
+
+### 3.3. `selective.harness` (Observable Equivalence, Verification & Bisection)
+
+The harness subsystem guarantees that Selective optimization never introduces behavioral regressions.
+
+#### Core Files & Implementations:
+
+- **[oec.py](file:///home/naegleria/Desktop/Selective/selective/harness/oec.py)**:
+  - `OECContract`: Defines Observable Equivalence Contract levels (L1 through L5). Takes state snapshots of running Python processes:
+    - **L1 (Outputs)**: `stdout` and `stderr` text streams.
+    - **L2 (Process Status)**: Subprocess exit code (`returncode`).
+    - **L3 (Loaded Modules)**: Keys in `sys.modules`.
+    - **L4 (Global State)**: Namespace attributes and exported globals.
+    - **L5 (Side-Effect Hooks)**: Hook integrity for `atexit`, `signal`, `sys.addaudithook`, and `os.environ`.
+
+- **[verify.py](file:///home/naegleria/Desktop/Selective/selective/harness/verify.py)**:
+  - `DifferentialVerifier`: Spawns two isolated subprocesses:
+    1. **Baseline Process**: Executes script under standard Python eager import loader.
+    2. **Selective Process**: Executes script under Selective demand loader.
+  - Compares OEC snapshots level by level and reports detailed diffs.
+
+- **[fuzzer.py](file:///home/naegleria/Desktop/Selective/selective/harness/fuzzer.py)**:
+  - `ImportFuzzer`: Randomizes module import sequences and attribute access patterns to stress-test lazy proxy robustness under non-deterministic load ordering.
+
+- **[bisect.py](file:///home/naegleria/Desktop/Selective/selective/harness/bisect.py)**:
+  - `AdvancedBisector`: Uses delta-debugging bisection algorithms to isolate the minimal failing lazy-import edge when an OEC regression is detected.
+  - Generates self-contained reproduction bundles in `.selective/repro/case-XXXX/`.
+
+---
+
+### 3.4. `selective.deploy` (Multi-Tier Deployment & Build Optimization)
+
+The deploy subsystem enables packaging and running Selective artifacts across local environments, serverless functions, and containerized deployments.
+
+#### Core Files & Implementations:
+
+- **[cache_resolver.py](file:///home/naegleria/Desktop/Selective/selective/deploy/cache_resolver.py)**:
+  - `CacheResolver`: Resolves multi-tier cache directories in order:
+    1. In-Memory Process Cache
+    2. Read-Only Project Baked Cache (`SELECTIVE_BAKED_CACHE` / `./baked_cache`)
+    3. User System Cache (`~/.cache/selective`)
+    4. Virtualenv Global Cache
+
+- **[hook.py](file:///home/naegleria/Desktop/Selective/selective/deploy/hook.py)**:
+  - `HookInstaller`: Installs or uninstalls `.pth` / `sitecustomize.py` stubs in virtual environments for automatic Selective initialization without code edits.
+
+- **[builder.py](file:///home/naegleria/Desktop/Selective/selective/deploy/builder.py)**:
+  - `SelectiveArtifactBuilder`: Precomputes relocatable bytecode caches, pre-analyzed package graphs, and deployment manifests for AWS Lambda and Docker containers (`selective build`).
+
+- **[doctor.py](file:///home/naegleria/Desktop/Selective/selective/deploy/doctor.py)**:
+  - `SelectiveDoctor`: Diagnostics tool validating CPython version compatibility, cache writeability, `.pth` hook health, and installed package status.
+
+---
+
+### 3.5. `selective.cli` (CLI Command Engine & Main Entrypoint)
+
+- **[commands.py](file:///home/naegleria/Desktop/Selective/selective/cli/commands.py)** & **[main.py](file:///home/naegleria/Desktop/Selective/selective/cli/main.py)**:
+  - Provides a unified CLI interface for `scan`, `security`, `security diff`, `explain`, `bisect`, `build`, `optimize`, `verify`, `doctor`, `install-hook`, `uninstall-hook`, and `run`.
+
+---
+
+## 4. Safety Classification & Evidence Taxonomy
+
+Selective uses a 4-tier evidence model to classify every import statement:
+
+```mermaid
+graph LR
+    Sub[Module / File Source] --> T1[Tier 1: Pure AST Defs & Classes]
+    Sub --> T2[Tier 2: Pure Body + Safe Imports]
+    Sub --> T3[Tier 3: Guarded / Feature Branches]
+    Sub --> T4[Tier 4: Global Side Effects / Native ELF]
+    
+    T1 --> SAFE_LAZY
+    T2 --> SAFE_LAZY
+    T3 --> CONDITIONALLY_LAZY
+    T4 --> EAGER_REQUIRED / NATIVE_REQUIRED / SECURITY_EAGER
+```
+
+### Evidence Tiers & Criteria
+
+| Evidence Tier | AST Criteria / Evidence | Assigned Safety Class | Action |
 |---|---|---|---|
-| `SAFE_LAZY` | Tier 1 / Tier 2 | Pure module body with defs, classes, and safe imports. No global side effects. | Demand Loaded (Lazy Proxy or PEP 810) |
-| `CONDITIONALLY_LAZY` | Tier 3 | Pure body, but conditionally imports modules based on feature invocation. | Demand Loaded with guarded resolution |
-| `EAGER_REQUIRED` | Tier 4 | Contains module-scope side effects (registration calls, `@register`, `sys.modules` mutation, `os.environ` writes). | Eager Loaded at startup |
-| `NATIVE_REQUIRED` | Tier 4 | Loads native compiled dynamic C/C++ extensions (`.so`, `.pyd`, `.dylib`, `DT_NEEDED`). | Eager Loaded at startup |
-| `SECURITY_EAGER` | Tier 4 | Contains security configurations (`sys.addaudithook`) or dynamic execution (`eval`, `exec`). | Eager Loaded at startup |
-| `UNKNOWN` | Tier 3 | Unproven dynamic safety under conservative policy. | Default Eager Loaded |
+| **Tier 1** | Module body contains only `def`, `class`, docstrings, and constant assignments. Zero imports or calls. | `SAFE_LAZY` | Safe to defer loading |
+| **Tier 2** | Pure module body whose only imports are themselves classified as `SAFE_LAZY`. | `SAFE_LAZY` | Safe to defer loading |
+| **Tier 3** | Pure body containing guarded imports (`if TYPE_CHECKING:`, `if sys.version_info`) or feature-dependent imports. | `CONDITIONALLY_LAZY` | Defer load with guarded check |
+| **Tier 4** | Contains module-scope side effects (`atexit`, `signal`, `@register`), native extensions (`.so`), `os.environ` writes, or security audit hooks. | `EAGER_REQUIRED` / `NATIVE_REQUIRED` / `SECURITY_EAGER` | **Must load eagerly at startup** |
 
 ---
 
-## 4. Key Extended Capabilities
+## 5. Observable Equivalence Contracts (OEC Levels 1–5)
 
-### 4.1. Background Speculative Loading Engine
-- **Module**: `selective.loader.speculative`
-- **Mechanism**: Maintains a priority queue of high-probability target modules based on static usage graphs or explicit confidence scores (`selective.prefetch("torch.optim", confidence=0.98)`).
-- **Invariant**: Background worker threads pre-parse ASTs, apply transformations, compile bytecode, and cache results in memory/disk **without executing module bodies (`exec()`) prematurely**.
+To prove that demand loading is behaviorally transparent, Selective defines 5 strict contract levels:
 
-### 4.2. Supply-Chain Security & Behavioral Genome Hashing
-- **Module**: `selective.analyzer.security`
-- **Mechanism**: Statically inspects AST nodes and native library headers to detect capabilities:
-  - Dynamic Execution (`eval`, `exec`, `importlib`)
-  - System Access (`subprocess`, `ctypes`, `os.system`)
-  - Network Interfaces (`socket`, `requests`, `urllib`)
-  - Environment Mutations (`os.environ`)
-  - Audit Hooks (`sys.addaudithook`)
-- Computes a stable **Behavioral Genome** SHA-256 hash. Enables differential supply-chain diffing between package versions (`selective security diff old.json new.json`).
+```
+[Level 1: Output Equivalence] ---> stdout & stderr match baseline byte-for-byte
+[Level 2: Status Equivalence] ---> returncode matches baseline exactly
+[Level 3: Module State]      ---> sys.modules keys & loaded module sets match
+[Level 4: Export State]      ---> Global namespace & exported attribute descriptors match
+[Level 5: System Hooks]      ---> atexit, signal, os.environ & audit hooks match
+```
 
-### 4.3. Automatic Regression Bisecting & Reproduction
-- **Module**: `selective.harness.bisect`
-- **Mechanism**: When an OEC verification regression occurs, the `AdvancedBisector` executes delta-debugging algorithms to isolate the minimal failing lazy-import edge.
-- **Artifacts**: Generates a self-contained reproduction bundle in `.selective/repro/case-XXXX/` containing:
-  - `app.py`: Target script
-  - `baseline.json` & `selective.json`: Execution snapshots
-  - `failing_edges.json`: Isolated regression edges
-  - `explanation.json`: Causal chain explanation (`selective explain --why`)
-
-### 4.4. Serverless & Container Build Optimization
-- **Module**: `selective.deploy.builder`
-- **Mechanism**: Precomputes transformed bytecode caches and relocatable artifacts for AWS Lambda, Cloud Run, Azure Functions, and Docker containers (`selective build`). Supports `SELECTIVE_BAKED_CACHE` for read-only container layers.
-
-### 4.5. Import Optimization Budgets
-- **Module**: `selective.analyzer.budget_optimizer`
-- **Mechanism**: Optimizes load plans under developer-specified constraints (`--startup-target 500ms`, `--memory-target 300MB`) while treating safety as a hard non-negotiable constraint.
+Differential verification (`selective verify app.py --level 5`) runs the target application in baseline (eager) mode and Selective (demand) mode, failing if any snapshot level produces a diff.
 
 ---
 
-## 5. CLI Command Reference
+## 6. Data Formats & Schema Specifications
 
-All CLI commands support `--json` for machine-readable output in CI/CD pipelines.
+### 6.1. Package Graph Schema (JSON & Binary SLTV)
 
-| Command | Syntax | Description |
-|---|---|---|
-| `scan` | `selective scan <pkg\|dir> [--project] [--bake DIR]` | Scans package or project directory and builds demand-load graph. |
-| `security` | `selective security <pkg> [--fail-on LEVEL]` | Generates supply-chain security report & behavioral genome hash. |
-| `security diff` | `selective security diff <old.json> <new.json>` | Diffs supply-chain changes between dependency versions. |
-| `explain` | `selective explain <module> [--why] [--unsafe]` | Explains safety decisions and causal failure chains. |
-| `bisect` | `selective bisect <script.py> [--level LEVEL]` | Delta-debugging bisection isolating minimal failing edge & repro artifact. |
-| `build` | `selective build <target> [--type container\|lambda]` | Precomputes relocatable container/serverless cold-start artifacts. |
-| `optimize` | `selective optimize <target> [--startup-target 500ms]` | Optimizes load plan under explicit startup and memory budgets. |
-| `verify` | `selective verify <script.py> [--level LEVEL]` | Runs differential subprocess verification against OEC contract. |
-| `doctor` | `selective doctor` | Displays environment diagnostics, cache writeability, and hook health. |
-| `install-hook` | `selective install-hook` | Installs `.pth` / `sitecustomize` stub into active virtual environment. |
-| `uninstall-hook` | `selective uninstall-hook` | Uninstalls `.pth` hook stub completely. |
-| `run` | `selective run <script.py> [--speculative]` | Executes a script with Selective demand loading enabled. |
+```json
+{
+  "package_name": "pandas",
+  "package_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "nodes": {
+    "pandas.core.frame": {
+      "module_name": "pandas.core.frame",
+      "file_path": "/path/to/pandas/core/frame.py",
+      "is_init": false,
+      "is_extension": false,
+      "symbols_defined": ["DataFrame"],
+      "reexports": {}
+    }
+  },
+  "edges": [
+    {
+      "source_module": "pandas",
+      "target_module": "pandas.core.frame",
+      "statement_type": "from_import",
+      "imported_names": [["DataFrame", null]],
+      "line_number": 42,
+      "safety_class": "SAFE_LAZY",
+      "evidence_tier": 2,
+      "reason": "Pure module body containing safe imports"
+    }
+  ],
+  "eliminated_edges": []
+}
+```
+
+### 6.2. Behavioral Genome Security Format
+
+```json
+{
+  "package_name": "torch",
+  "genome_id": "a9f87c6b5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a",
+  "capabilities": {
+    "EVAL_EXEC": [
+      {
+        "module": "torch.fx.interpreter",
+        "capability": "EVAL_EXEC",
+        "severity": "HIGH",
+        "line_number": 128,
+        "reasoning": "Dynamic execution via eval() or exec()"
+      }
+    ],
+    "SUBPROCESS_CTYPES": [],
+    "NETWORK_SOCKET": [],
+    "ENV_MUTATION": [],
+    "AUDIT_HOOKS": []
+  },
+  "total_findings": 1
+}
+```
+
+### 6.3. Bisection Repro Artifact Bundle Structure
+
+```
+.selective/repro/case-0001/
+├── app.py                 # Target application script
+├── baseline.json          # Baseline eager execution OEC snapshot
+├── selective.json         # Failing Selective execution OEC snapshot
+├── load_plan.json         # Active demand load plan graph
+├── failing_edges.json     # Minimal isolated failing import edge(s)
+└── explanation.json       # Causal chain explanation report
+```
 
 ---
 
-## 6. Python API & Environment Controls
+## 7. Exhaustive CLI Command Reference
 
-### Python API Usage
+All CLI commands support `--json` for CI/CD automation.
+
+### 1. `selective scan`
+```bash
+selective scan <target> [--project] [--bake <dir>] [--json]
+```
+- **Description**: Scans a package or project directory, performs AOT static analysis, and builds dependency graphs.
+- **Flags**:
+  - `--project`: Scan a directory containing application source files and auto-discover all used third-party packages.
+  - `--bake <dir>`: Precompute and bake bytecode cache into target directory.
+
+### 2. `selective security`
+```bash
+selective security <package> [--fail-on <level>] [--json]
+```
+- **Description**: Generates a supply-chain security report and behavioral genome hash.
+- **Flags**:
+  - `--fail-on`: Failure threshold (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`). Returns exit code 1 if findings meet threshold.
+
+### 3. `selective security diff`
+```bash
+selective security diff <old.json> <new.json> [--json]
+```
+- **Description**: Compares two behavioral genome security report JSONs and flags newly introduced capabilities.
+
+### 4. `selective explain`
+```bash
+selective explain <module> [--why] [--unsafe] [--json]
+```
+- **Description**: Explains safety classification decisions or complete causal failure chains.
+
+### 5. `selective bisect`
+```bash
+selective bisect <script.py> [--level <1-5>] [--json]
+```
+- **Description**: Runs delta-debugging bisection to isolate minimal failing import edge causing an OEC regression.
+
+### 6. `selective build`
+```bash
+selective build <target> [--type <container|lambda>] [--bake <dir>] [--output-dir <dir>] [--json]
+```
+- **Description**: Precomputes relocatable container/serverless cold-start artifacts and build manifest.
+
+### 7. `selective optimize`
+```bash
+selective optimize <target> [--startup-target <ms>] [--memory-target <MB>] [--safety <strict|balanced|permissive>] [--json]
+```
+- **Description**: Optimizes load plans under explicit performance budgets while enforcing safety.
+
+### 8. `selective verify`
+```bash
+selective verify <script.py> [--level <1-5>] [--json]
+```
+- **Description**: Runs differential subprocess testing against Observable Equivalence Contracts.
+
+### 9. `selective doctor`
+```bash
+selective doctor [--json]
+```
+- **Description**: Runs system health checks, cache writeability tests, and virtualenv hook diagnostics.
+
+### 10. `selective install-hook` / `selective uninstall-hook`
+```bash
+selective install-hook
+selective uninstall-hook
+```
+- **Description**: Installs or uninstalls `.pth` / `sitecustomize` global virtualenv hook.
+
+### 11. `selective run`
+```bash
+selective run <script.py> [--speculative] [--spec-workers <N>] [--json]
+```
+- **Description**: Executes script with Selective demand loading enabled.
+
+---
+
+## 8. Python API & Environment Variable Reference
+
+### Programmatic Python API
 
 ```python
 import selective
 
-# Background speculative compilation & bytecode pre-caching
-selective.prefetch("torch.optim", confidence=0.98)
+# Speculatively compile and pre-cache a target module in the background
+selective.prefetch(module_name="torch.optim", confidence=0.98)
 ```
 
-### Environment Variables
+### Environment Variable Matrix
 
-| Variable | Default | Values | Description |
-|---|---|---|---|
-| `SELECTIVE_DISABLE` | `0` | `0` \| `1` | Emergency kill switch to disable Selective loader. |
-| `SELECTIVE_MODE` | `conservative` | `conservative` \| `lenient` | Safety policy strictness. |
-| `SELECTIVE_STRICT` | `0` | `0` \| `1` | Fail fast on unhandled lazy import exception. |
-| `SELECTIVE_LOG` | `None` | `<filepath>` | Diagnostic log file path. |
-| `SELECTIVE_BAKED_CACHE` | `None` | `<dirpath>` | Read-only pre-baked container cache path. |
-| `SELECTIVE_SPECULATIVE` | `0` | `0` \| `1` | Enable background speculative compilation. |
+| Variable | Values | Description |
+|---|---|---|
+| `SELECTIVE_DISABLE` | `0` \| `1` | Emergency kill switch (`1` = completely disable Selective finder). |
+| `SELECTIVE_MODE` | `conservative` \| `lenient` | Safety policy strictness (`conservative` avoids non-deterministic side effects). |
+| `SELECTIVE_STRICT` | `0` \| `1` | Fail fast on unhandled lazy import exceptions (`1` = strict). |
+| `SELECTIVE_LOG` | `<filepath>` | Diagnostic log file destination. |
+| `SELECTIVE_BAKED_CACHE` | `<dirpath>` | Read-only precomputed cache directory path (e.g. for Docker image layers). |
+| `SELECTIVE_SPECULATIVE` | `0` \| `1` | Enables background speculative compilation worker pool (`1` = enabled). |
 
 ---
 
-## 7. Performance & Verification Metrics
+## 9. Empirical Benchmarks & Performance Metrics
 
-- **Startup Acceleration**: Up to **97.1% faster initial imports** (PyTorch Adam: 2.327s -> 0.067s; SciPy stats: 1.068s -> 0.068s; pandas: 0.470s -> 0.082s).
-- **Finder Overhead**: `< 0.150 µs` per `find_spec` lookup on unmanaged imports.
-- **OEC Verification Rate**: **0.0 / 1000** false optimizations across full differential verification suite.
+### Measured Import Overhead Reduction (CPython 3.13.5 / Linux x86_64)
+
+| Framework | Workload | Baseline Eager Import | Selective Optimized | Speedup (%) | Import Time Saved |
+|---|---|---|---|---|---|
+| **PyTorch** | A (tensor initialization) | 1.550 s | **0.078 s** | **95.0%** | **1,472 ms** |
+| **PyTorch** | C (Adam optimizer) | 2.327 s | **0.067 s** | **97.1%** | **2,260 ms** |
+| **SciPy** | B (optimize minimize) | 0.691 s | **0.066 s** | **90.4%** | **625 ms** |
+| **SciPy** | C (stats norm pdf) | 1.068 s | **0.068 s** | **93.6%** | **1,000 ms** |
+| **pandas** | A (tiny DataFrame) | 0.470 s | **0.082 s** | **82.5%** | **387 ms** |
+| **pandas** | B (Groupby mean) | 0.450 s | **0.117 s** | **74.1%** | **333 ms** |
+| **NumPy** | C (linalg svd) | 0.136 s | **0.064 s** | **52.5%** | **72 ms** |
+
+- **MetaPathFinder Lookup Latency**: `< 0.150 µs` per `find_spec` call on unmanaged imports.
+- **OEC Verification Violation Rate**: **0.0 / 1000** (Zero false optimizations across full test suite).
