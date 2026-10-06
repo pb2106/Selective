@@ -38,7 +38,7 @@ class ImportRecord:
             "is_guarded_branch": self.is_guarded_branch,
         }
 
-def resolve_relative_import(current_module: str, level: int, relative_target: Optional[str]) -> str:
+def resolve_relative_import(current_module: str, level: int, relative_target: Optional[str], is_init: bool = False) -> str:
     """
     Resolves a relative import (level > 0) or absolute import (level == 0).
     """
@@ -46,10 +46,14 @@ def resolve_relative_import(current_module: str, level: int, relative_target: Op
         return relative_target or ""
 
     parts = current_module.split(".")
-    if level > len(parts):
+    effective_level = level - 1 if is_init else level
+
+    if effective_level <= 0:
+        base_parts = parts
+    elif effective_level >= len(parts):
         base_parts = []
     else:
-        base_parts = parts[:-level]
+        base_parts = parts[:-effective_level]
 
     if relative_target:
         if base_parts:
@@ -58,8 +62,9 @@ def resolve_relative_import(current_module: str, level: int, relative_target: Op
     return ".".join(base_parts)
 
 class ImportVisitor(ast.NodeVisitor):
-    def __init__(self, current_module: str):
+    def __init__(self, current_module: str, is_init: bool = False):
         self.current_module = current_module
+        self.is_init = is_init
         self.imports: List[ImportRecord] = []
         self._scope_stack: List[str] = ["module"]
         self._type_checking_depth: int = 0
@@ -133,7 +138,7 @@ class ImportVisitor(ast.NodeVisitor):
             self.imports.append(rec)
 
     def visit_ImportFrom(self, node: ast.ImportFrom):
-        mod_target = resolve_relative_import(self.current_module, node.level, node.module)
+        mod_target = resolve_relative_import(self.current_module, node.level, node.module, is_init=self.is_init)
         names = []
         is_star = False
         for alias in node.names:
@@ -156,10 +161,11 @@ class ImportVisitor(ast.NodeVisitor):
         self.imports.append(rec)
 
 class ImportExtractor:
-    def __init__(self, current_module: str):
+    def __init__(self, current_module: str, is_init: bool = False):
         self.current_module = current_module
+        self.is_init = is_init
 
     def extract(self, ast_tree: ast.AST) -> List[ImportRecord]:
-        visitor = ImportVisitor(self.current_module)
+        visitor = ImportVisitor(self.current_module, is_init=self.is_init)
         visitor.visit(ast_tree)
         return visitor.imports

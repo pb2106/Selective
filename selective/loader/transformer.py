@@ -8,23 +8,31 @@ import ast
 import sys
 from typing import List, Dict, Set, Tuple, Optional, Any
 from selective.analyzer.graph_builder import PackageGraph, GraphEdge
+from selective.analyzer.import_extractor import resolve_relative_import
 
 class StrategyBTransformer(ast.NodeTransformer):
-    def __init__(self, current_module: str, safe_lazy_targets: Set[str], parent_package: str):
+    def __init__(
+        self,
+        current_module: str,
+        safe_lazy_targets: Set[str],
+        parent_package: str,
+        known_modules: Optional[Set[str]] = None,
+        is_init: bool = False
+    ):
         super().__init__()
         self.current_module = current_module
         self.safe_lazy_targets = safe_lazy_targets
         self.parent_package = parent_package
-        self.lazy_symbols: Dict[str, Tuple[str, str]] = {} # symbol -> (source_mod, source_symbol)
+        self.known_modules = known_modules or set()
+        self.is_init = is_init
+        self.lazy_symbols: Dict[str, Tuple[str, str]] = {}
 
     def visit_Import(self, node: ast.Import) -> Any:
-        # Check if statements are in module scope
         new_nodes = []
         for alias in node.names:
             mod_name = alias.name
             if mod_name in self.safe_lazy_targets:
                 bound_name = alias.asname or mod_name.split(".")[0]
-                # Replace with bound_name = __selective_lazy_module__("mod_name", "parent_package")
                 call_node = ast.Assign(
                     targets=[ast.Name(id=bound_name, ctx=ast.Store())],
                     value=ast.Call(
@@ -46,17 +54,25 @@ class StrategyBTransformer(ast.NodeTransformer):
         return new_nodes if len(new_nodes) > 1 else new_nodes[0]
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> Any:
-        mod_name = node.module or ""
-        if mod_name in self.safe_lazy_targets:
-            new_nodes = []
-            for alias in node.names:
-                if alias.name == "*":
-                    # Star imports never lazy
-                    return node
-                bound_name = alias.asname or alias.name
-                target_submod = f"{mod_name}.{alias.name}" if mod_name else alias.name
-                
-                # Create lazy module stub for submodule import
+        resolved_mod = resolve_relative_import(
+            self.current_module,
+            node.level,
+            node.module,
+            is_init=self.is_init
+        )
+
+        new_nodes = []
+        modified = False
+
+        for alias in node.names:
+            if alias.name == "*":
+                return node
+
+            bound_name = alias.asname or alias.name
+            target_submod = f"{resolved_mod}.{alias.name}" if resolved_mod else alias.name
+
+            # Create lazy proxy only if target_submod is a safe lazy module in known_modules
+            if target_submod in self.safe_lazy_targets and (not self.known_modules or target_submod in self.known_modules):
                 call_node = ast.Assign(
                     targets=[ast.Name(id=bound_name, ctx=ast.Store())],
                     value=ast.Call(
@@ -70,10 +86,21 @@ class StrategyBTransformer(ast.NodeTransformer):
                 )
                 ast.copy_location(call_node, node)
                 new_nodes.append(call_node)
+                modified = True
+            else:
+                # Retain original import for symbols or non-lazy modules
+                imp_node = ast.ImportFrom(
+                    module=node.module,
+                    names=[alias],
+                    level=node.level
+                )
+                ast.copy_location(imp_node, node)
+                new_nodes.append(imp_node)
 
-            return new_nodes if len(new_nodes) > 1 else new_nodes[0]
+        if not modified:
+            return node
 
-        return node
+        return new_nodes if len(new_nodes) > 1 else new_nodes[0]
 
 class SelectiveTransformer:
     def __init__(self, current_module: str, package_graph: Optional[PackageGraph] = None):
@@ -83,8 +110,15 @@ class SelectiveTransformer:
     def transform(self, tree: ast.AST, strategy: str = "B") -> ast.AST:
         parent_package = self.current_module.split(".")[0]
         safe_lazy_targets: Set[str] = set()
+        known_modules: Set[str] = set()
+        is_init = False
 
         if self.package_graph is not None:
+            known_modules = set(self.package_graph.nodes.keys())
+            node_info = self.package_graph.nodes.get(self.current_module)
+            if node_info is not None:
+                is_init = node_info.is_init
+
             for edge in self.package_graph.edges:
                 if edge.source_module == self.current_module and edge.safety_class == "SAFE_LAZY":
                     safe_lazy_targets.add(edge.target_module)
@@ -103,7 +137,13 @@ class SelectiveTransformer:
             return tree
         else:
             # Strategy B: Source transform
-            transformer = StrategyBTransformer(self.current_module, safe_lazy_targets, parent_package)
+            transformer = StrategyBTransformer(
+                self.current_module,
+                safe_lazy_targets,
+                parent_package,
+                known_modules=known_modules,
+                is_init=is_init
+            )
             transformed_tree = transformer.visit(tree)
 
             # Prepend import of __selective_lazy_module__ helper if stubs were injected

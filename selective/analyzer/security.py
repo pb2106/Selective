@@ -279,7 +279,7 @@ class SecurityAnalyzer:
                 ))
 
             if minfo.ast_tree is not None:
-                extractor = ImportExtractor(mname)
+                extractor = ImportExtractor(mname, is_init=minfo.is_init)
                 records = extractor.extract(minfo.ast_tree)
                 import_edges_count += len(records)
 

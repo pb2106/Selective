@@ -57,7 +57,7 @@ class SelectiveArtifactBuilder:
                     imports = []
                     side_effects = []
                     if minfo.ast_tree is not None:
-                        extractor = ImportExtractor(mname)
+                        extractor = ImportExtractor(mname, is_init=minfo.is_init)
                         imports = extractor.extract(minfo.ast_tree)
                         side_effects = side_analyzer.analyze(minfo.ast_tree)
 

@@ -62,11 +62,14 @@ class SelectiveFinder(importlib.abc.MetaPathFinder):
 
         if spec is not None and spec.origin and spec.origin.endswith(".py"):
             loader = SelectiveLoader(fullname, spec.origin, graph)
-            return importlib.util.spec_from_loader(
+            res_spec = importlib.util.spec_from_loader(
                 fullname,
                 loader,
                 origin=spec.origin,
                 is_pkg=spec.submodule_search_locations is not None
             )
+            if res_spec is not None and spec.submodule_search_locations is not None:
+                res_spec.submodule_search_locations = spec.submodule_search_locations
+            return res_spec
 
         return None
