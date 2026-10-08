@@ -98,7 +98,6 @@ class SideEffectVisitor(ast.NodeVisitor):
                     line_number=node.lineno,
                     node=node
                 ))
-
         self.generic_visit(node)
 
     def visit_Assign(self, node: ast.Assign):

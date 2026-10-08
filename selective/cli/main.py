@@ -74,6 +74,7 @@ def main():
     # run
     run_parser = subparsers.add_parser("run", help="Run script with Selective optimization enabled")
     run_parser.add_argument("--speculative", action="store_true", help="Enable background speculative loading during execution")
+    run_parser.add_argument("-c", dest="code", default=None, help="Program passed in as string (like python -c)")
     run_parser.add_argument("script_args", nargs=argparse.REMAINDER, help="Script and arguments")
 
     args = parser.parse_args()
@@ -110,7 +111,7 @@ def main():
     elif args.command == "uninstall-hook":
         sys.exit(cmd_uninstall_hook())
     elif args.command == "run":
-        sys.exit(cmd_run(args.script_args, speculative=args.speculative))
+        sys.exit(cmd_run(args.script_args, speculative=args.speculative, code=args.code))
     else:
         parser.print_help()
         sys.exit(0)

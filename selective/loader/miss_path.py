@@ -28,9 +28,10 @@ def taint_package(package_name: str, reason: str):
         logging.warning(f"[Selective] Package '{package_name}' tainted: {reason}. Degrading all stubs to eager.")
 
 class LazyModuleProxy:
-    def __init__(self, target_module: str, parent_package: str = ""):
+    def __init__(self, target_module: str, parent_package: str = "", bind_root: bool = False):
         self._target_module = target_module
         self._parent_package = parent_package or target_module.split(".")[0]
+        self._bind_root = bind_root
         self._resolved_module: Optional[Any] = None
         self._lock = get_module_lock(target_module)
 
@@ -45,8 +46,13 @@ class LazyModuleProxy:
             try:
                 # Perform real import
                 mod = importlib.import_module(self._target_module)
-                self._resolved_module = mod
-                return mod
+                if self._bind_root:
+                    root_pkg = self._target_module.split(".")[0]
+                    res = sys.modules.get(root_pkg, mod)
+                else:
+                    res = mod
+                self._resolved_module = res
+                return res
             except Exception as exc:
                 # Append context note to exception
                 note = " (raised via Selective lazy import; set SELECTIVE_DISABLE=1 to compare)"
@@ -59,9 +65,10 @@ class LazyModuleProxy:
         try:
             return getattr(mod, name)
         except AttributeError as err:
-            # Check for graph violation
+            # Check for graph violation (ignore private/dunder attrs and C-extension dynamic attrs)
             if not hasattr(mod, name):
-                taint_package(self._parent_package, f"Missing attribute '{name}' in module '{self._target_module}'")
+                if not (name.startswith("_") or self._target_module.endswith("._C") or "._C." in self._target_module or getattr(mod, "__file__", "").endswith((".so", ".pyd", ".dylib"))):
+                    taint_package(self._parent_package, f"Missing attribute '{name}' in module '{self._target_module}'")
             raise err
 
     def __repr__(self) -> str:
@@ -73,8 +80,8 @@ class LazyModuleProxy:
         mod = self._resolve()
         return dir(mod)
 
-def lazy_import_module(target_module: str, parent_package: str = "") -> Any:
+def lazy_import_module(target_module: str, parent_package: str = "", bind_root: bool = False) -> Any:
     """Helper function instantiated by transformed bytecode."""
     if is_package_tainted(parent_package or target_module.split(".")[0]):
         return importlib.import_module(target_module)
-    return LazyModuleProxy(target_module, parent_package)
+    return LazyModuleProxy(target_module, parent_package, bind_root=bind_root)

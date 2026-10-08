@@ -1,0 +1,17 @@
+{
+  "workload": "AI Stack Text Feature Pipeline (nltk + spacy + sklearn + torch + transformers)",
+  "baseline_import_ms": 3455.06,
+  "selective_import_ms": 5265.56,
+  "import_speedup_pct": -52.4,
+  "baseline_import_modules": 3769,
+  "selective_import_modules": 3784,
+  "baseline_total_ms": 5655.83,
+  "selective_total_ms": 10778.13,
+  "total_saved_ms": -5122.3,
+  "total_speedup_pct": -90.57,
+  "baseline_rss_mb": 1596.65,
+  "selective_rss_mb": 1596.65,
+  "baseline_modules_loaded": 4705,
+  "selective_modules_loaded": 4712,
+  "oec_observable_equivalence_passed": true
+}

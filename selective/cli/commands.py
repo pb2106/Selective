@@ -354,13 +354,17 @@ def cmd_uninstall_hook() -> int:
         print("[Selective] Hook was not installed.")
     return 0
 
-def cmd_run(args: List[str], speculative: bool = False) -> int:
-    if not args:
-        print("Usage: selective run SCRIPT.py [--speculative] [args...]", file=sys.stderr)
+def cmd_run(args: List[str], speculative: bool = False, code: Optional[str] = None) -> int:
+    if code is None and not args:
+        print("Usage: selective run [--speculative] (SCRIPT.py | -c CODE) [args...]", file=sys.stderr)
         return 1
 
-    script_path = args[0]
-    sys.argv = args
+    if code is not None:
+        script_path = "<string>"
+        sys.argv = ["-c"] + list(args)
+    else:
+        script_path = args[0]
+        sys.argv = args
 
     if speculative:
         scheduler = SpeculativeScheduler.get_instance()
@@ -374,25 +378,21 @@ def cmd_run(args: List[str], speculative: bool = False) -> int:
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             for pkg in manifest.get("managed_dependencies", []):
-                g_path = cache_dir / f"{pkg}_graph.json"
-                if g_path.exists():
-                    g = GraphSerializer.load_json(g_path)
-                    SelectiveFinder.register_package(pkg, g)
+                SelectiveFinder.register_package(pkg)
         except Exception:
             pass
     else:
         for g_file in cache_dir.glob("*_graph.json"):
-            try:
-                pkg_name = g_file.name.replace("_graph.json", "")
-                g = GraphSerializer.load_json(g_file)
-                SelectiveFinder.register_package(pkg_name, g)
-            except Exception:
-                pass
+            pkg_name = g_file.name.replace("_graph.json", "")
+            SelectiveFinder.register_package(pkg_name)
 
     SelectiveFinder.install()
 
-    with open(script_path, "r") as f:
-        code_text = f.read()
+    if code is not None:
+        code_text = code
+    else:
+        with open(script_path, "r") as f:
+            code_text = f.read()
 
     exec(compile(code_text, script_path, "exec"), {"__name__": "__main__"})
     return 0

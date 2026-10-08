@@ -34,7 +34,7 @@ class SafetyClassifier:
         Modes: 'conservative' (default), 'balanced', 'aggressive'.
         """
         # 1. Native extension modules
-        if module_info.is_extension:
+        if module_info.is_extension or module_info.module_name.endswith("._C") or "._C." in module_info.module_name:
             return SafetyClassification(
                 safety_class="NATIVE_REQUIRED",
                 evidence_tier=4,

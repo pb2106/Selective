@@ -33,6 +33,10 @@ class StrategyBTransformer(ast.NodeTransformer):
             mod_name = alias.name
             if mod_name in self.safe_lazy_targets:
                 bound_name = alias.asname or mod_name.split(".")[0]
+                bind_root = bool(not alias.asname and "." in mod_name)
+                keywords = []
+                if bind_root:
+                    keywords.append(ast.keyword(arg="bind_root", value=ast.Constant(value=True)))
                 call_node = ast.Assign(
                     targets=[ast.Name(id=bound_name, ctx=ast.Store())],
                     value=ast.Call(
@@ -41,7 +45,7 @@ class StrategyBTransformer(ast.NodeTransformer):
                             ast.Constant(value=mod_name),
                             ast.Constant(value=self.parent_package)
                         ],
-                        keywords=[]
+                        keywords=keywords
                     )
                 )
                 ast.copy_location(call_node, node)
@@ -121,7 +125,8 @@ class SelectiveTransformer:
 
             for edge in self.package_graph.edges:
                 if edge.source_module == self.current_module and edge.safety_class == "SAFE_LAZY":
-                    safe_lazy_targets.add(edge.target_module)
+                    if edge.target_module == parent_package or edge.target_module.startswith(parent_package + "."):
+                        safe_lazy_targets.add(edge.target_module)
 
         if strategy == "A" or sys.version_info >= (3, 15):
             # Strategy A: Native __lazy_modules__ injection
