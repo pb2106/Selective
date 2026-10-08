@@ -55,7 +55,7 @@ class SelectiveFinder(importlib.abc.MetaPathFinder):
         # Standard loader lookup
         spec = None
         for finder in sys.meta_path:
-            if finder is not self and hasattr(finder, "find_spec"):
+            if not isinstance(finder, SelectiveFinder) and hasattr(finder, "find_spec"):
                 spec = finder.find_spec(fullname, path, target)
                 if spec is not None and spec.origin and spec.origin.endswith(".py"):
                     break
@@ -66,7 +66,7 @@ class SelectiveFinder(importlib.abc.MetaPathFinder):
                 fullname,
                 loader,
                 origin=spec.origin,
-                is_pkg=spec.submodule_search_locations is not None
+                is_package=spec.submodule_search_locations is not None
             )
             if res_spec is not None and spec.submodule_search_locations is not None:
                 res_spec.submodule_search_locations = spec.submodule_search_locations

@@ -126,7 +126,7 @@ Runs differential testing against Observable Equivalence Contracts (OEC Levels 1
 ```bash
 selective verify app.py --level 5
 ```
-Inspects stdout/stderr, return codes, `sys.modules` state, global attributes, and side-effect hook integrity.
+Inspects stdout/stderr, return codes, `sys.modules` state, global attributes, and side-effect hook integrity. Harness-injected control flags (`SELECTIVE_DISABLE`, etc.) are automatically excluded from process state (L4) comparison to prevent false positives while preserving strict detection of real environment mutations.
 
 ---
 
@@ -208,6 +208,7 @@ selective.prefetch("torch.optim", confidence=0.98)
 | `SELECTIVE_MODE` | `conservative` \| `lenient` | Load plan strictness (`conservative` avoids non-deterministic side-effects). |
 | `SELECTIVE_STRICT` | `0` \| `1` | Fail fast on any unhandled lazy loading exception (`1` = strict). |
 | `SELECTIVE_LOG` | `<filepath>` | Path to write runtime demand-loader diagnostics and trace logs. |
+| `SELECTIVE_CACHE` | `<dirpath>` | Custom directory path for persistent bytecode cache. |
 | `SELECTIVE_BAKED_CACHE` | `<dirpath>` | Read-only directory containing pre-baked bytecode caches (e.g. Docker images). |
 | `SELECTIVE_SPECULATIVE` | `0` \| `1` | Enables background speculative module compilation worker pool (`1` = enabled). |
 

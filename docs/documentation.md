@@ -177,7 +177,7 @@ The harness subsystem guarantees that Selective optimization never introduces be
     - **L1 (Outputs)**: `stdout` and `stderr` text streams.
     - **L2 (Process Status)**: Subprocess exit code (`returncode`).
     - **L3 (Loaded Modules)**: Keys in `sys.modules`.
-    - **L4 (Global State)**: Namespace attributes and exported globals.
+    - **L4 (Global State)**: Namespace attributes and exported globals. Filters `HARNESS_ENV_KEYS` (`SELECTIVE_DISABLE`, `SELECTIVE_MODE`, etc.) and volatile process keys (`_`, `OLDPWD`) from `env_vars` state snapshots to prevent harness control toggles from causing false-positive diffs.
     - **L5 (Side-Effect Hooks)**: Hook integrity for `atexit`, `signal`, `sys.addaudithook`, and `os.environ`.
 
 - **[verify.py](file:///home/naegleria/Desktop/Selective/selective/harness/verify.py)**:
@@ -440,6 +440,7 @@ selective.prefetch(module_name="torch.optim", confidence=0.98)
 | `SELECTIVE_MODE` | `conservative` \| `lenient` | Safety policy strictness (`conservative` avoids non-deterministic side effects). |
 | `SELECTIVE_STRICT` | `0` \| `1` | Fail fast on unhandled lazy import exceptions (`1` = strict). |
 | `SELECTIVE_LOG` | `<filepath>` | Diagnostic log file destination. |
+| `SELECTIVE_CACHE` | `<dirpath>` | Custom directory path for persistent bytecode cache. |
 | `SELECTIVE_BAKED_CACHE` | `<dirpath>` | Read-only precomputed cache directory path (e.g. for Docker image layers). |
 | `SELECTIVE_SPECULATIVE` | `0` \| `1` | Enables background speculative compilation worker pool (`1` = enabled). |
 
