@@ -10,6 +10,25 @@ import json
 import warnings
 import logging
 from typing import Dict, Any, List, Set, Tuple
+from selective.loader.controls import SelectiveConfig
+
+HARNESS_ENV_KEYS = frozenset(SelectiveConfig.CONTROL_KEYS | {"_", "OLDPWD"})
+HARNESS_INJECTED_ENV = {"SELECTIVE_DISABLE": "1"}
+
+def filter_harness_env_vars(env: Any) -> Dict[str, str]:
+    if not isinstance(env, dict):
+        return {}
+    filtered = {}
+    for k, v in env.items():
+        if k in HARNESS_ENV_KEYS:
+            if k in ("_", "OLDPWD"):
+                continue
+            if k in HARNESS_INJECTED_ENV and v == HARNESS_INJECTED_ENV[k]:
+                continue
+            if k in SelectiveConfig.CONTROL_KEYS and k not in HARNESS_INJECTED_ENV:
+                continue
+        filtered[k] = v
+    return filtered
 
 class OECSnapshot:
     def __init__(
@@ -71,7 +90,12 @@ class OECSnapshot:
         for k in set(self.l4_process_state.keys()) | set(other.l4_process_state.keys()):
             val_a = self.l4_process_state.get(k)
             val_b = other.l4_process_state.get(k)
-            if val_a != val_b:
+            if k == "env_vars":
+                env_a = filter_harness_env_vars(val_a)
+                env_b = filter_harness_env_vars(val_b)
+                if env_a != env_b:
+                    l4_diff[k] = {"baseline": env_a, "target": env_b}
+            elif val_a != val_b:
                 l4_diff[k] = {"baseline": val_a, "target": val_b}
         if l4_diff:
             diffs["L4_ProcessState"] = l4_diff
@@ -120,7 +144,7 @@ class OECSnapshotEngine:
 
         # L4: Process State
         l4 = {
-            "env_vars": dict(os.environ),
+            "env_vars": filter_harness_env_vars(dict(os.environ)),
             "sys_path_len": len(sys.path),
             "recursion_limit": sys.getrecursionlimit(),
         }
